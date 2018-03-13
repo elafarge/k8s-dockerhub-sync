@@ -2,6 +2,12 @@
 
 
 [[projects]]
+  name = "github.com/elafarge/gin-http-logger"
+  packages = ["logrus-formatters"]
+  revision = "111a4ca13a3d8def3647506ed8a0e1fe49dd2f02"
+  version = "v2.0.2"
+
+[[projects]]
   name = "github.com/ghodss/yaml"
   packages = ["."]
   revision = "0ca9ea5df5451ffdf184b4428c902747c2c11cd7"
@@ -140,7 +146,7 @@
     "idna",
     "lex/httplex"
   ]
-  revision = "ae89d30ce0c63142b652837da33d782e2b0a9b25"
+  revision = "803fdb99c0f72e493c28ef2099d250a9c989d8ff"
 
 [[projects]]
   branch = "master"
@@ -149,7 +155,7 @@
     "unix",
     "windows"
   ]
-  revision = "c28acc882ebcbfbe8ce9f0f14b9ac26ee138dd51"
+  revision = "8c0ece68c28377f4c326d85b94f8df0dace46f80"
 
 [[projects]]
   name = "golang.org/x/text"
@@ -312,6 +318,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "14ce4cd1116869fb5dba04b5021720932349991b5ce375aa0b75419807136a35"
+  inputs-digest = "a7f9e6fa62a0e29cf88734e5db9e8afbcd206b5df547e1a88572e301bcf1c84b"
   solver-name = "gps-cdcl"
   solver-version = 1

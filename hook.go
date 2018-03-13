@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,12 +9,17 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
+
+	"github.com/elafarge/gin-http-logger/logrus-formatters"
 	kubeAppsV1 "k8s.io/api/apps/v1"
 	kubeV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -77,19 +83,34 @@ func UpdateImageToDeploymentMap(kubeClientSet *kubernetes.Clientset, namespaces 
 }
 
 func main() {
-	log := logrus.WithField("ctx", "main")
 
 	var (
 		kubeconfig    string
 		syncPeriod    time.Duration
 		namespaceList string
+
+		logLevel string
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "cluster", "Path to your kube config file, leave unset for in-cluster automatic configuration")
 	flag.StringVar(&namespaceList, "watch-namespaces", "default", "The list of namespaces to watch for image updates")
 	flag.DurationVar(&syncPeriod, "sync-period", time.Minute, "Period between two refreshes of the list of Deployments to monitor")
+	flag.StringVar(&logLevel, "log-level", "info", "Logrus log level (debug, info, warn, error)")
 
 	flag.Parse()
+
+	log := logrus.WithField("ctx", "main")
+
+	logrusLogLevel, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		log.Panicf("Error parsing logrus log level: %v", err)
+	}
+
+	// Set log level
+	logrus.SetLevel(logrusLogLevel)
+
+	// Format logs as JSON
+	logrus.SetFormatter(&logrusformatters.FluentdFormatter{"2006-01-02T15:04:05.000000000Z"})
 
 	var watchedNamespaces = strings.Split(namespaceList, ",")
 	if len(watchedNamespaces) <= 0 {
@@ -98,7 +119,6 @@ func main() {
 
 	// Let's create our Kubernetes client
 	var kubeConfig *kubeRest.Config
-	var err error
 
 	if kubeconfig == "cluster" {
 		if kubeConfig, err = kubeRest.InClusterConfig(); err != nil {
@@ -126,7 +146,7 @@ func main() {
 
 	syncloop:
 		for {
-			log.Debugln("Starting synppcloop iteration")
+			log.Debugln("Starting syncloop iteration")
 
 			select {
 			case <-updateGoroutineStopChan:
@@ -136,7 +156,20 @@ func main() {
 				if err := UpdateImageToDeploymentMap(kubeClientSet, watchedNamespaces, &monitoredDeployments); err != nil {
 					log.Errorf("Error updating images-to-deployments map: %v", err)
 				}
-				log.Debugf("New images-to-deployments map: %v", monitoredDeployments.ImageToDeploymentsMap)
+
+				jsonLog := map[string][]string{}
+				for image, depls := range monitoredDeployments.ImageToDeploymentsMap {
+					jsonLog[image] = []string{}
+					for _, depl := range depls {
+						jsonLog[image] = append(jsonLog[image], fmt.Sprintf("%s/%s", depl.Namespace, depl.Name))
+					}
+				}
+				jsonLogBytes, err := json.Marshal(jsonLog)
+				if err != nil {
+					log.Errorf("Error marshaling image -> deployments map to json: %v", err)
+				} else {
+					log.Debugf("Updated image-to-deployments map: %s", jsonLogBytes)
+				}
 			}
 		}
 
@@ -145,6 +178,12 @@ func main() {
 
 	// Let's register our routes
 	router := mux.NewRouter()
+
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("Hook is healthy, webserver is running"))
+	})
+
 	router.HandleFunc("/dockerhub-push", func(w http.ResponseWriter, r *http.Request) {
 		log := logrus.WithField("ctx", "dockerhub-push")
 
@@ -179,16 +218,14 @@ func main() {
 		if matchList, ok := monitoredDeployments.ImageToDeploymentsMap[imageName]; ok {
 			for _, deployment := range matchList {
 				logDep := log.WithField("namespace", deployment.Namespace).WithField("deployment", deployment.Name)
-				logDep.Infoln(
+				logDep.Infof(
 					"Recently pushed image:tag %s matched with deployment %s in namespace %s, updating deployment...",
 					imageName, deployment.Name, deployment.Namespace,
 				)
 
 				// TODO: find a less hacky way to trigger the rolling update and - more important - follow
 				// the status of rolling updates and log errors
-				annotations := deployment.GetAnnotations()
-				annotations["dockerhub-sync.io/deployment-seed"] = RandStringBytesRmndr(8)
-				deployment.SetAnnotations(annotations)
+				deployment.Spec.Template.Annotations["dockerhub-sync.io/deployment-seed"] = time.Now().Format(time.UnixDate)
 
 				deploymentsClient := kubeClientSet.AppsV1().Deployments(deployment.Namespace)
 				if _, err := deploymentsClient.Update(&deployment); err != nil {
@@ -211,9 +248,37 @@ func main() {
 		w.Write([]byte(fmt.Sprintf("Updated deployments: %v", updatedDeployments)))
 	})
 
-	// TODO handle graceful sigterms
+	// Let's create the WebServer
+	server := http.Server{
+		Addr:    ":8080",
+		Handler: router,
+	}
 
-	http.ListenAndServe(":8080", router)
+	// Handle graceful sigterms
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT)
+
+		// Blocks until we actually receive one of these signals
+		sig := <-sigChan
+		log.Infof("Received %v signal, exiting gracefully...", sig)
+
+		log.Infoln("Stopping sync goroutine...")
+		updateGoroutineStopChan <- struct{}{}
+		wg.Wait()
+
+		log.Infoln("Shutting down webserver")
+		if err := server.Shutdown(context.Background()); err != nil {
+			log.Errorf("Error shutting down hook server: %v", err)
+		}
+	}()
+
+	log.Debugln("Starting webhook server")
+	if err := server.ListenAndServe(); err != nil {
+		log.Errorf("Error running server: %v", err)
+	}
+
+	log.WithField("ctx", "main").Infof("Exiting main process")
 }
 
 ////////////////// UTILITIES ///////////////////
