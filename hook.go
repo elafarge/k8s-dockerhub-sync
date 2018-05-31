@@ -223,17 +223,31 @@ func main() {
 					imageName, deployment.Name, deployment.Namespace,
 				)
 
-				// TODO: find a less hacky way to trigger the rolling update and - more important - follow
-				// the status of rolling updates and log errors
-				deployment.Spec.Template.Annotations["dockerhub-sync.io/deployment-seed"] = time.Now().Format(time.UnixDate)
+				logDep.Debugf("Getting latest revision of the %s/%s deployment before applying update")
 
 				deploymentsClient := kubeClientSet.AppsV1().Deployments(deployment.Namespace)
-				if _, err := deploymentsClient.Update(&deployment); err != nil {
+				deploymentPtr, err := deploymentsClient.Get(deployment.Name, kubeV1.GetOptions{})
+				if err != nil {
+					logDep.Errorf(
+						"Error refreshing deployment object %s/%s: %v",
+						deployment.Namespace, deployment.Name, err,
+					)
+					continue
+				}
+
+				// TODO: find a less hacky way to trigger the rolling update and - more important - follow
+				// the status of rolling updates and log errors
+				if deploymentPtr.Spec.Template.Annotations == nil {
+					deploymentPtr.Spec.Template.Annotations = map[string]string{}
+				}
+				deploymentPtr.Spec.Template.Annotations["dockerhub-sync.io/deployment-seed"] = time.Now().Format(time.UnixDate)
+
+				if _, err := deploymentsClient.Update(deploymentPtr); err != nil {
 					logDep.Errorf("Error updating deployment: %v", err)
-					failedUpdates = append(failedUpdates, fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name))
+					failedUpdates = append(failedUpdates, fmt.Sprintf("%s/%s", deploymentPtr.Namespace, deploymentPtr.Name))
 				} else {
 					logDep.Infof("Updated deployment")
-					updatedDeployments = append(updatedDeployments, fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name))
+					updatedDeployments = append(updatedDeployments, fmt.Sprintf("%s/%s", deploymentPtr.Namespace, deploymentPtr.Name))
 				}
 			}
 		}
