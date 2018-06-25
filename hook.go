@@ -19,7 +19,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 
-	"github.com/elafarge/gin-http-logger/logrus-formatters"
+	"github.com/elafarge/k8s-dockerhub-sync/utils"
 	kubeAppsV1 "k8s.io/api/apps/v1"
 	kubeV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -110,7 +110,7 @@ func main() {
 	logrus.SetLevel(logrusLogLevel)
 
 	// Format logs as JSON
-	logrus.SetFormatter(&logrusformatters.FluentdFormatter{"2006-01-02T15:04:05.000000000Z"})
+	logrus.SetFormatter(&utils.FluentdFormatter{"2006-01-02T15:04:05.000000000Z"})
 
 	var watchedNamespaces = strings.Split(namespaceList, ",")
 	if len(watchedNamespaces) <= 0 {
